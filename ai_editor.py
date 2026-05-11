@@ -190,6 +190,7 @@ def agregar_musica(video, ruta_musica, volumen=0.3):
               if musica.duration < video.duration
               else musica.subclip(0, video.duration))
     audio_final = CompositeAudioClip([video.audio, musica]) if video.audio else musica
+    audio_final.fps = video.audio.fps if video.audio else 44100
     resultado     = video.set_audio(audio_final)
     resultado.fps = video.fps
     return resultado
