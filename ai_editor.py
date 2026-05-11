@@ -16,9 +16,34 @@ from pydub import AudioSegment
 from pydub.silence import detect_nonsilent
 
 
+def reparar_video(ruta: str) -> str:
+    """
+    Re-muxea el video con ffmpeg para corregir moov atom not found
+    y otros problemas de corrupción leve. Devuelve la ruta del archivo reparado.
+    """
+    ruta_reparada = ruta.replace("_input.", "_fixed.")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", ruta, "-c", "copy",
+             "-movflags", "+faststart", ruta_reparada],
+            check=True, capture_output=True, timeout=120
+        )
+        print(f"🔧 Video reparado: {ruta_reparada}")
+        return ruta_reparada
+    except subprocess.CalledProcessError as e:
+        print(f"⚠️ No se pudo reparar el video: {e.stderr.decode()[:200]}. Usando original.")
+        return ruta
+    except Exception as e:
+        print(f"⚠️ Error al reparar: {e}. Usando original.")
+        return ruta
+
+
 def procesar_video(ruta: str, acciones: dict, ruta_salida: str = "uploads/video_editado.mp4") -> str:
     if not os.path.exists(ruta):
         raise FileNotFoundError(f"No se encontró: {ruta}")
+
+    # Reparar video antes de procesarlo (fix moov atom, archivos cortados, etc.)
+    ruta = reparar_video(ruta)
 
     # Normalizar acciones
     if acciones.get("speed")  in (None, 1.0):       acciones["speed"]  = None
@@ -88,6 +113,11 @@ def procesar_video(ruta: str, acciones: dict, ruta_salida: str = "uploads/video_
             remove_temp=True, logger=None
         )
         video.close()
+
+    # Limpiar archivo reparado temporal
+    ruta_fixed = ruta if ruta.endswith("_fixed.mp4") or "_fixed." in ruta else None
+    if ruta_fixed and os.path.exists(ruta_fixed) and ruta_fixed != ruta_salida:
+        os.remove(ruta_fixed)
 
     print(f"✅ Guardado: {ruta_salida}")
     return ruta_salida
