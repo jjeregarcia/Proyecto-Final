@@ -795,8 +795,17 @@ async function send() {
   form.append('comando', cmd);
   if (musicFile) form.append('music', musicFile);
 
+  // Keepalive: ping cada 20s para evitar que el celular corte la conexión
+  const pingInterval = setInterval(async () => {
+    try { await fetch('/ping', { method:'GET' }); } catch {}
+  }, 20000);
+
   try {
-    const res = await fetch('/upload', { method:'POST', body:form });
+    const controller = new AbortController();
+    const timeoutId  = setTimeout(() => controller.abort(), 300000); // 5 min
+    const res = await fetch('/upload', { method:'POST', body:form, signal: controller.signal });
+    clearTimeout(timeoutId);
+    clearInterval(pingInterval);
     stopProgress(); sbtn.disabled = false;
     if (!res.ok) {
       const err = await res.json();
@@ -819,9 +828,13 @@ async function send() {
         Descargar video editado
       </a>
     `);
-  } catch {
+  } catch (err) {
+    clearInterval(pingInterval);
     stopProgress(); sbtn.disabled = false;
-    addMsg('ai', '❌ No se pudo conectar al servidor. Verificá que Flask esté corriendo.');
+    const msg = err.name === 'AbortError'
+      ? '⏱️ El video tardó demasiado en procesarse. Intentá con un video más corto.'
+      : '❌ La conexión se cortó mientras se procesaba el video. Intentá con un video más corto o esperá unos segundos y volvé a intentarlo.';
+    addMsg('ai', msg);
   }
 }
 

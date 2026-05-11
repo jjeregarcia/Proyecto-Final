@@ -3,31 +3,23 @@ import os, uuid
 from ia_interpreter_llm import interpretar_comando
 from ai_editor import procesar_video
 
-# ── Auth imports ──────────────────────────────────────────────────────────
 from flask_login import (
     LoginManager, UserMixin,
     login_user, logout_user, login_required, current_user
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
-# ─────────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-cambiame-en-produccion")
 
-# ── Flask-Login ───────────────────────────────────────────────────────────
 login_manager = LoginManager(app)
 login_manager.login_view = "login_page"
 login_manager.login_message = None
 
-# ─────────────────────────────────────────────────────────────────────────
-#  ALMACENAMIENTO EN MEMORIA
-#  ⚠️  Los usuarios se pierden al reiniciar el servidor.
-#  Estructura: { "email": { "id": str, "username": str, "password_hash": str } }
-# ─────────────────────────────────────────────────────────────────────────
-USERS: dict = {}          # clave = email (lowercase)
-USERS_BY_ID: dict = {}    # clave = id (uuid hex)
+# ── Usuarios en memoria ───────────────────────────────────────────────────
+USERS: dict = {}
+USERS_BY_ID: dict = {}
 
-# ── Modelo de usuario (sin ORM, solo clase Python) ────────────────────────
 class User(UserMixin):
     def __init__(self, data: dict):
         self.id       = data["id"]
@@ -39,7 +31,7 @@ class User(UserMixin):
         return check_password_hash(self._data["password_hash"], password)
 
     @staticmethod
-    def create(username: str, email: str, password: str) -> "User":
+    def create(username, email, password):
         uid  = uuid.uuid4().hex
         data = {
             "id":            uid,
@@ -52,28 +44,22 @@ class User(UserMixin):
         return User(data)
 
     @staticmethod
-    def get_by_email(email: str):
+    def get_by_email(email):
         data = USERS.get(email.lower())
         return User(data) if data else None
 
     @staticmethod
-    def get_by_id(uid: str):
+    def get_by_id(uid):
         data = USERS_BY_ID.get(uid)
         return User(data) if data else None
 
     @staticmethod
-    def email_exists(email: str) -> bool:
-        return email.lower() in USERS
-
+    def email_exists(email):    return email.lower() in USERS
     @staticmethod
-    def username_exists(username: str) -> bool:
-        return any(u["username"].lower() == username.lower() for u in USERS.values())
-
+    def username_exists(name):  return any(u["username"].lower() == name.lower() for u in USERS.values())
 
 @login_manager.user_loader
-def load_user(user_id: str):
-    return User.get_by_id(user_id)
-
+def load_user(uid): return User.get_by_id(uid)
 
 # ── Upload config ─────────────────────────────────────────────────────────
 UPLOAD_FOLDER = "uploads"
@@ -81,22 +67,16 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {"mp4", "mov", "avi", "mkv", "webm"}
 ALLOWED_AUDIO      = {"mp3", "wav", "ogg", "m4a"}
-app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
 
-def allowed_file(f: str) -> bool:
-    return "." in f and f.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+def allowed_file(f): return "." in f and f.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-# ─────────────────────────────────────────────────────────────────────────
-#  RUTAS DE AUTENTICACIÓN
-# ─────────────────────────────────────────────────────────────────────────
-
+# ── Auth routes ───────────────────────────────────────────────────────────
 @app.route("/login")
 def login_page():
-    if current_user.is_authenticated:
-        return redirect(url_for("index"))
+    if current_user.is_authenticated: return redirect(url_for("index"))
     return render_template("login.html")
-
 
 @app.route("/auth/register", methods=["POST"])
 def register():
@@ -104,7 +84,6 @@ def register():
     username = data.get("username", "").strip()
     email    = data.get("email", "").strip().lower()
     password = data.get("password", "")
-
     if not username or not email or not password:
         return jsonify({"error": "Todos los campos son obligatorios."}), 400
     if len(password) < 8:
@@ -113,26 +92,21 @@ def register():
         return jsonify({"error": "Ya existe una cuenta con ese email."}), 409
     if User.username_exists(username):
         return jsonify({"error": "Ese nombre de usuario ya está en uso."}), 409
-
     user = User.create(username, email, password)
     login_user(user, remember=True)
     return jsonify({"ok": True, "username": user.username}), 201
-
 
 @app.route("/auth/login", methods=["POST"])
 def login():
     data     = request.get_json()
     email    = data.get("email", "").strip().lower()
     password = data.get("password", "")
-
     user = User.get_by_email(email)
     if not user or not user.check_password(password):
         return jsonify({"error": "Email o contraseña incorrectos."}), 401
-
     login_user(user, remember=True)
     session["historial"] = []
     return jsonify({"ok": True, "username": user.username}), 200
-
 
 @app.route("/auth/logout", methods=["POST"])
 @login_required
@@ -140,22 +114,22 @@ def logout():
     logout_user()
     return jsonify({"ok": True}), 200
 
-
 @app.route("/auth/me")
 @login_required
 def me():
     return jsonify({"username": current_user.username, "email": current_user.email})
 
 
-# ─────────────────────────────────────────────────────────────────────────
-#  RUTAS PRINCIPALES (protegidas)
-# ─────────────────────────────────────────────────────────────────────────
-
+# ── Rutas principales ─────────────────────────────────────────────────────
 @app.route("/")
 @login_required
 def index():
     session.setdefault("historial", [])
     return render_template("index.html")
+
+@app.route("/ping")
+def ping():
+    return jsonify({"ok": True}), 200
 
 
 @app.route("/reset", methods=["POST"])
@@ -178,11 +152,19 @@ def interpretar():
     historial.append({"role": "assistant", "content": str(resultado)})
     session["historial"] = historial[-20:]
 
-    # Si el intérprete devolvió texto (respuesta conversacional) en lugar de acciones
-    if isinstance(resultado, str):
-        return jsonify({"chat": resultado})
+    # ── Si es chat normal, devolver solo el mensaje ──
+    if resultado.get("type") == "chat":
+        return jsonify({
+            "type":    "chat",
+            "message": resultado.get("message", "¡Hola! ¿En qué te puedo ayudar?")
+        })
 
-    return jsonify({"acciones": resultado, "resumen": resumir_acciones(resultado)})
+    # ── Si es comando de video, devolver acciones ──
+    return jsonify({
+        "type":    "actions",
+        "acciones": resultado,
+        "resumen":  resumir_acciones(resultado)
+    })
 
 
 @app.route("/upload", methods=["POST"])
@@ -201,17 +183,21 @@ def upload():
 
     try:
         historial = session.get("historial", [])
-        acciones  = interpretar_comando(comando, historial)
+        resultado = interpretar_comando(comando, historial)
+
+        # Si manda un saludo mientras sube un video, igual procesar con fallback
+        if resultado.get("type") == "chat":
+            return jsonify({"error": "Escribí qué querés hacer con el video (ej: 'quitar silencios y agregar subtítulos')."}), 400
+
+        acciones = resultado
         print("Acciones:", acciones)
 
         uid      = uuid.uuid4().hex[:8]
         ext      = video.filename.rsplit(".", 1)[1].lower()
         ruta_in  = os.path.join(UPLOAD_FOLDER, f"{uid}_input.{ext}")
         ruta_out = os.path.join(UPLOAD_FOLDER, f"{uid}_editado.mp4")
-
         video.save(ruta_in)
 
-        # Guardar música si se subió
         if "music" in request.files and request.files["music"].filename != "":
             music_file = request.files["music"]
             music_ext  = music_file.filename.rsplit(".", 1)[1].lower()
@@ -234,11 +220,8 @@ def upload():
         return jsonify({"error": str(e)}), 500
 
 
-# ─────────────────────────────────────────────────────────────────────────
-#  HELPERS
-# ─────────────────────────────────────────────────────────────────────────
-
-def resumir_acciones(a: dict) -> str:
+# ── Helpers ───────────────────────────────────────────────────────────────
+def resumir_acciones(a):
     p = []
     if a.get("remove_silence"): p.append("✂️ Eliminar silencios")
     if a.get("subtitles"):       p.append("💬 Subtítulos")

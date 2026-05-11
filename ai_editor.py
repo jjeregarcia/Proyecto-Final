@@ -1,285 +1,318 @@
 """
-ai_editor.py - Compatible con Python 3.11 y Railway/Linux.
-Subtítulos via ffmpeg puro (sin ImageMagick).
+ai_editor.py - 100% ffmpeg, sin MoviePy. Compatible con Railway/Linux.
+Soporta cualquier formato de video. Rápido y robusto.
 """
+import os, tempfile, subprocess, json
 from faster_whisper import WhisperModel
-import os, tempfile, subprocess
-import numpy as np
-from moviepy.editor import (
-    VideoFileClip, AudioFileClip,
-    concatenate_videoclips, CompositeVideoClip,
-)
-from moviepy.video.fx.all import blackwhite as bw_fx, speedx, fadein, fadeout
-from moviepy.audio.fx.all  import audio_fadein, audio_fadeout, audio_loop
-from moviepy.audio.AudioClip import CompositeAudioClip
 from pydub import AudioSegment
 from pydub.silence import detect_nonsilent
 
 
-def reparar_video(ruta: str) -> str:
-    """
-    Re-muxea el video con ffmpeg para corregir moov atom not found
-    y otros problemas de corrupción leve. Devuelve la ruta del archivo reparado.
-    """
-    ruta_reparada = ruta.replace("_input.", "_fixed.")
+# ── Helper ffmpeg ─────────────────────────────────────────────────────────
+
+def _run(cmd: list, timeout=600) -> subprocess.CompletedProcess:
+    """Ejecuta un comando ffmpeg y lanza excepción si falla."""
+    result = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg error: {result.stderr.decode()[-500:]}")
+    return result
+
+
+def _duracion(ruta: str) -> float:
+    """Obtiene la duración del video en segundos usando ffprobe."""
+    r = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-print_format", "json",
+         "-show_format", ruta],
+        capture_output=True, timeout=30
+    )
+    data = json.loads(r.stdout)
+    return float(data["format"]["duration"])
+
+
+def _reparar(ruta: str) -> str:
+    """Re-muxea para corregir moov atom y otros problemas de corrupción."""
+    ruta_fixed = ruta.replace("_input.", "_fixed.")
     try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", ruta, "-c", "copy",
-             "-movflags", "+faststart", ruta_reparada],
-            check=True, capture_output=True, timeout=120
-        )
-        print(f"🔧 Video reparado: {ruta_reparada}")
-        return ruta_reparada
-    except subprocess.CalledProcessError as e:
-        print(f"⚠️ No se pudo reparar el video: {e.stderr.decode()[:200]}. Usando original.")
-        return ruta
+        _run(["ffmpeg", "-y", "-i", ruta, "-c", "copy",
+              "-movflags", "+faststart", ruta_fixed])
+        print(f"🔧 Video reparado OK")
+        return ruta_fixed
     except Exception as e:
-        print(f"⚠️ Error al reparar: {e}. Usando original.")
+        print(f"⚠️ Reparación falló, usando original: {e}")
         return ruta
 
+
+# ── Procesador principal ──────────────────────────────────────────────────
 
 def procesar_video(ruta: str, acciones: dict, ruta_salida: str = "uploads/video_editado.mp4") -> str:
     if not os.path.exists(ruta):
         raise FileNotFoundError(f"No se encontró: {ruta}")
 
-    # Reparar video antes de procesarlo (fix moov atom, archivos cortados, etc.)
-    ruta = reparar_video(ruta)
-
-    # Normalizar acciones
-    if acciones.get("speed")  in (None, 1.0):       acciones["speed"]  = None
-    if acciones.get("volume") in (None, 1.0):        acciones["volume"] = None
-    if acciones.get("zoom")   in (None, False, 1.0): acciones["zoom"]   = None
-    if acciones.get("blackwhite") and (
-        not isinstance(acciones["blackwhite"], (list, tuple)) or
-        None in acciones["blackwhite"] or len(acciones["blackwhite"]) != 2
-    ):
-        acciones["blackwhite"] = None
-
-    quiere_subtitulos = acciones.get("subtitles", False)
-
-    video = VideoFileClip(ruta)
-    print(f"📹 {video.duration:.1f}s — {video.w}x{video.h}px")
-
-    if acciones.get("duration"):
-        limite = min(float(acciones["duration"]), video.duration)
-        video = video.subclip(0, limite)
-
-    if acciones.get("speed"):
-        video = cambiar_velocidad(video, acciones["speed"])
-
-    if acciones.get("remove_silence"):
-        video = eliminar_silencios(video)
-
-    if acciones.get("blackwhite") and None not in acciones["blackwhite"]:
-        video = aplicar_blanco_y_negro(video, *acciones["blackwhite"])
-
-    if acciones.get("zoom"):
-        escala = acciones["zoom"] if isinstance(acciones["zoom"], float) else 1.3
-        video = aplicar_zoom_progresivo(video, escala)
-
-    if acciones.get("volume"):
-        video = ajustar_volumen(video, acciones["volume"])
-
-    fade_in  = acciones.get("fade_in")  or 0
-    fade_out = acciones.get("fade_out") or 0
-    if fade_in or fade_out:
-        video = aplicar_fade(video, fade_in, fade_out)
-
-    if acciones.get("music_path"):
-        video = agregar_musica(video, acciones["music_path"], acciones.get("music_volume", 0.3))
-
-    if acciones.get("highlights"):
-        video = detectar_highlights(video, acciones.get("highlights_duration") or 30.0)
-
     os.makedirs(os.path.dirname(ruta_salida) or "uploads", exist_ok=True)
 
-    # Si hay subtítulos → guardar video sin subtítulos primero, luego quemar con ffmpeg
-    if quiere_subtitulos:
-        ruta_sin_subs = ruta_salida.replace(".mp4", "_nosubs.mp4")
-        video.write_videofile(
-            ruta_sin_subs, codec="libx264", audio_codec="aac",
-            temp_audiofile="uploads/temp_audio_out.m4a",
-            remove_temp=True, logger=None
-        )
-        video.close()
-        print("🎙️ Transcribiendo con Whisper...")
-        ruta_salida = agregar_subtitulos_ffmpeg(ruta_sin_subs, ruta_salida)
-        if os.path.exists(ruta_sin_subs):
-            os.remove(ruta_sin_subs)
-    else:
-        video.write_videofile(
-            ruta_salida, codec="libx264", audio_codec="aac",
-            temp_audiofile="uploads/temp_audio_out.m4a",
-            remove_temp=True, logger=None
-        )
-        video.close()
+    # 1. Reparar video primero
+    ruta = _reparar(ruta)
+    duracion = _duracion(ruta)
+    print(f"📹 Duración: {duracion:.1f}s")
 
-    # Limpiar archivo reparado temporal
-    ruta_fixed = ruta if ruta.endswith("_fixed.mp4") or "_fixed." in ruta else None
-    if ruta_fixed and os.path.exists(ruta_fixed) and ruta_fixed != ruta_salida:
-        os.remove(ruta_fixed)
+    # 2. Normalizar acciones
+    speed  = acciones.get("speed")
+    volume = acciones.get("volume")
+    zoom   = acciones.get("zoom")
+    if speed  in (1.0, 0.0): speed  = None
+    if volume in (1.0, 0.0): volume = None
+    if zoom   in (1.0, 0.0, False): zoom = None
+
+    duration   = acciones.get("duration")
+    bw         = acciones.get("blackwhite")   # [inicio, fin] o None
+    fade_in    = acciones.get("fade_in")  or 0
+    fade_out   = acciones.get("fade_out") or 0
+    subtitles  = acciones.get("subtitles", False)
+    rm_silence = acciones.get("remove_silence", False)
+    music_path = acciones.get("music_path")
+    music_vol  = acciones.get("music_volume") or 0.3
+    highlights = acciones.get("highlights", False)
+    hl_dur     = acciones.get("highlights_duration") or 30.0
+
+    # Validar blackwhite
+    if bw and (not isinstance(bw, (list, tuple)) or len(bw) != 2 or None in bw):
+        bw = None
+
+    # 3. Si piden highlights → recortar primero los mejores momentos
+    if highlights:
+        ruta = _highlights(ruta, duracion, hl_dur)
+        duracion = _duracion(ruta)
+
+    # 4. Eliminar silencios
+    if rm_silence:
+        ruta = _eliminar_silencios(ruta)
+        duracion = _duracion(ruta)
+
+    # 5. Recortar duración
+    if duration and float(duration) < duracion:
+        tmp = _tmp("mp4")
+        _run(["ffmpeg", "-y", "-i", ruta, "-t", str(duration),
+              "-c", "copy", tmp])
+        ruta = tmp
+        duracion = float(duration)
+
+    # 6. Construir filtros de video y audio
+    vf_parts = []
+    af_parts = []
+
+    # Zoom progresivo
+    if zoom:
+        z = float(zoom)
+        vf_parts.append(
+            f"zoompan=z='min(zoom+0.0005,{z})':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=hd720"
+        )
+
+    # Blanco y negro parcial
+    if bw:
+        inicio_bw = float(bw[0])
+        fin_bw    = float(bw[1])
+        vf_parts.append(
+            f"hue=enable='between(t,{inicio_bw},{fin_bw})':s=0"
+        )
+
+    # Velocidad (video)
+    if speed:
+        vf_parts.append(f"setpts={1/float(speed):.4f}*PTS")
+        # Audio: atempo soporta 0.5-2.0, encadenar si hace falta
+        s = float(speed)
+        if 0.5 <= s <= 2.0:
+            af_parts.append(f"atempo={s:.4f}")
+        elif s > 2.0:
+            af_parts.append(f"atempo=2.0,atempo={s/2:.4f}")
+        elif s < 0.5:
+            af_parts.append(f"atempo=0.5,atempo={s*2:.4f}")
+
+    # Volumen
+    if volume:
+        af_parts.append(f"volume={float(volume):.2f}")
+
+    # Fade in/out video
+    if fade_in:
+        vf_parts.append(f"fade=t=in:st=0:d={fade_in}")
+    if fade_out:
+        vf_parts.append(f"fade=t=out:st={max(0, duracion-fade_out):.2f}:d={fade_out}")
+
+    # Fade in/out audio
+    if fade_in:
+        af_parts.append(f"afade=t=in:st=0:d={fade_in}")
+    if fade_out:
+        af_parts.append(f"afade=t=out:st={max(0, duracion-fade_out):.2f}:d={fade_out}")
+
+    # 7. Aplicar filtros de video/audio
+    tmp_filtros = _tmp("mp4")
+    cmd = ["ffmpeg", "-y", "-i", ruta]
+    extra_args = []
+
+    if vf_parts or af_parts or music_path:
+        if music_path and os.path.exists(music_path):
+            cmd += ["-i", music_path]
+            # Mezclar música con audio original
+            music_af = f"[1:a]volume={music_vol:.2f},aloop=loop=-1:size=2e+09[music]"
+            orig_af  = "[0:a]" + (",".join(af_parts) if af_parts else "") + "[origa]" if af_parts else "[0:a][origa]"
+            if af_parts:
+                filter_complex = f"[0:a]{','.join(af_parts)}[origa];{music_af};[origa][music]amix=inputs=2:duration=first[aout]"
+            else:
+                filter_complex = f"{music_af};[0:a][music]amix=inputs=2:duration=first[aout]"
+            extra_args += ["-filter_complex", filter_complex, "-map", "0:v", "-map", "[aout]"]
+            if vf_parts:
+                extra_args += ["-vf", ",".join(vf_parts)]
+        else:
+            if vf_parts:
+                extra_args += ["-vf", ",".join(vf_parts)]
+            if af_parts:
+                extra_args += ["-af", ",".join(af_parts)]
+
+        cmd += extra_args + ["-c:v", "libx264", "-c:a", "aac",
+                              "-preset", "fast", tmp_filtros]
+    else:
+        # Sin filtros → solo re-encodear para garantizar compatibilidad
+        cmd += ["-c:v", "libx264", "-c:a", "aac", "-preset", "fast", tmp_filtros]
+
+    _run(cmd)
+    ruta = tmp_filtros
+
+    # 8. Subtítulos
+    if subtitles:
+        ruta = _agregar_subtitulos(ruta)
+
+    # 9. Mover a salida final
+    _run(["ffmpeg", "-y", "-i", ruta, "-c", "copy",
+          "-movflags", "+faststart", ruta_salida])
 
     print(f"✅ Guardado: {ruta_salida}")
     return ruta_salida
 
 
-# ── Funciones de edición ──────────────────────────────────────────────────
+# ── Funciones auxiliares ──────────────────────────────────────────────────
 
-def cambiar_velocidad(video, factor):
-    if not (0.1 <= factor <= 10):
-        raise ValueError(f"Factor inválido: {factor}")
-    return speedx(video, factor)
-
-
-def eliminar_silencios(video, min_silence_len=700, silence_thresh=-38, padding_ms=150):
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        ruta_wav = tmp.name
-    try:
-        video.audio.write_audiofile(ruta_wav, logger=None)
-        audio = AudioSegment.from_wav(ruta_wav)
-        segs  = detect_nonsilent(audio, min_silence_len=min_silence_len, silence_thresh=silence_thresh)
-        if not segs:
-            return video
-        dur   = len(audio)
-        clips = []
-        for s, e in segs:
-            clips.append(video.subclip(max(0, s - padding_ms) / 1000,
-                                       min(dur, e + padding_ms) / 1000))
-        return concatenate_videoclips(clips)
-    finally:
-        if os.path.exists(ruta_wav): os.remove(ruta_wav)
+def _tmp(ext: str) -> str:
+    f = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False, dir="uploads")
+    f.close()
+    return f.name
 
 
-def aplicar_blanco_y_negro(video, inicio, fin):
-    d      = video.duration
-    inicio = max(0.0, float(inicio))
-    fin    = min(float(fin), d)
-    if inicio >= fin: return video
+def _eliminar_silencios(ruta: str, min_silence_ms=700, thresh=-38, padding_ms=150) -> str:
+    """Detecta silencios con pydub y concatena los segmentos con voz."""
+    tmp_wav = _tmp("wav")
+    _run(["ffmpeg", "-y", "-i", ruta, "-vn", "-ar", "16000", "-ac", "1", tmp_wav])
+
+    audio = AudioSegment.from_wav(tmp_wav)
+    segs  = detect_nonsilent(audio, min_silence_len=min_silence_ms, silence_thresh=thresh)
+    os.remove(tmp_wav)
+
+    if not segs:
+        return ruta
+
+    dur_ms = len(audio)
+    # Generar lista de segmentos con padding
     partes = []
-    if inicio > 0: partes.append(video.subclip(0, inicio))
-    partes.append(bw_fx(video.subclip(inicio, fin)))
-    if fin < d:    partes.append(video.subclip(fin, d))
-    return concatenate_videoclips(partes) if len(partes) > 1 else partes[0]
+    for s, e in segs:
+        inicio = max(0, s - padding_ms) / 1000
+        fin    = min(dur_ms, e + padding_ms) / 1000
+        partes.append((inicio, fin))
+
+    # Crear archivo concat
+    clips = []
+    for i, (inicio, fin) in enumerate(partes):
+        tmp_clip = _tmp("mp4")
+        _run(["ffmpeg", "-y", "-i", ruta,
+              "-ss", str(inicio), "-to", str(fin),
+              "-c:v", "libx264", "-c:a", "aac", "-preset", "fast", tmp_clip])
+        clips.append(tmp_clip)
+
+    return _concatenar(clips)
 
 
-def aplicar_zoom_progresivo(video, escala_max=1.3):
-    resultado = video.resize(lambda t: 1 + (escala_max - 1) * (t / video.duration))
-    resultado.fps = video.fps
-    return resultado
+def _concatenar(clips: list) -> str:
+    """Concatena una lista de archivos mp4 usando ffmpeg concat."""
+    lista = _tmp("txt")
+    with open(lista, "w") as f:
+        for c in clips:
+            f.write(f"file '{os.path.abspath(c)}'\n")
+    salida = _tmp("mp4")
+    _run(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+          "-i", lista, "-c", "copy", salida])
+    os.remove(lista)
+    for c in clips:
+        if os.path.exists(c): os.remove(c)
+    return salida
 
 
-def ajustar_volumen(video, factor):
-    if video.audio is None: return video
-    return video.volumex(factor)
+def _highlights(ruta: str, duracion: float, hl_dur: float = 30.0, ventana: float = 3.0) -> str:
+    """Selecciona los segmentos de mayor energía de audio."""
+    tmp_wav = _tmp("wav")
+    _run(["ffmpeg", "-y", "-i", ruta, "-vn", "-ar", "16000", "-ac", "1", tmp_wav])
+
+    audio   = AudioSegment.from_wav(tmp_wav)
+    os.remove(tmp_wav)
+    vm      = int(ventana * 1000)
+    energias = [(audio[i:i+vm].rms, i / 1000)
+                for i in range(0, len(audio) - vm, vm // 2)]
+    if not energias:
+        return ruta
+
+    energias.sort(reverse=True)
+    n_segs  = max(1, int(hl_dur / ventana))
+    mejores = sorted(energias[:n_segs], key=lambda x: x[1])
+
+    clips, ultimo = [], -ventana
+    for _, inicio in mejores:
+        if inicio >= ultimo:
+            fin = min(inicio + ventana, duracion)
+            tmp_clip = _tmp("mp4")
+            _run(["ffmpeg", "-y", "-i", ruta,
+                  "-ss", str(inicio), "-to", str(fin),
+                  "-c:v", "libx264", "-c:a", "aac", "-preset", "fast", tmp_clip])
+            clips.append(tmp_clip)
+            ultimo = fin
+
+    return _concatenar(clips) if clips else ruta
 
 
-def aplicar_fade(video, fade_in=1.0, fade_out=1.0):
-    if fade_in > 0:
-        video = fadein(video, fade_in)
-        if video.audio: video = video.set_audio(audio_fadein(video.audio, fade_in))
-    if fade_out > 0:
-        video = fadeout(video, fade_out)
-        if video.audio: video = video.set_audio(audio_fadeout(video.audio, fade_out))
-    return video
-
-
-def agregar_musica(video, ruta_musica, volumen=0.3):
-    if not os.path.exists(ruta_musica): return video
-    musica = AudioFileClip(ruta_musica).volumex(volumen)
-    musica = (audio_loop(musica, duration=video.duration)
-              if musica.duration < video.duration
-              else musica.subclip(0, video.duration))
-    audio_final = CompositeAudioClip([video.audio, musica]) if video.audio else musica
-    audio_final.fps = video.audio.fps if video.audio else 44100
-    resultado     = video.set_audio(audio_final)
-    resultado.fps = video.fps
-    return resultado
-
-
-def detectar_highlights(video, duracion_total=30.0, ventana=3.0):
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        ruta_wav = tmp.name
-    try:
-        video.audio.write_audiofile(ruta_wav, logger=None)
-        audio = AudioSegment.from_wav(ruta_wav)
-        vm    = int(ventana * 1000)
-        energias = [(audio[i:i+vm].rms, i/1000)
-                    for i in range(0, len(audio) - vm, vm // 2)]
-        if not energias: return video
-        energias.sort(reverse=True)
-        mejores = sorted(energias[:max(1, int(duracion_total / ventana))], key=lambda x: x[1])
-        clips, ultimo = [], -ventana
-        for _, inicio in mejores:
-            if inicio >= ultimo:
-                fin = min(inicio + ventana, video.duration)
-                clips.append(video.subclip(inicio, fin))
-                ultimo = fin
-        return concatenate_videoclips(clips) if clips else video
-    finally:
-        if os.path.exists(ruta_wav): os.remove(ruta_wav)
-
-
-# ── Subtítulos via ffmpeg (sin ImageMagick) ───────────────────────────────
-
-def agregar_subtitulos_ffmpeg(ruta_video: str, ruta_salida: str) -> str:
-    """
-    Transcribe con Whisper → genera .srt → quema subtítulos con ffmpeg subtitles filter.
-    No necesita ImageMagick.
-    """
-    # 1. Extraer audio para Whisper
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        ruta_wav = tmp.name
-    with tempfile.NamedTemporaryFile(suffix=".srt", delete=False, mode="w", encoding="utf-8") as tmp_srt:
-        ruta_srt = tmp_srt.name
+def _agregar_subtitulos(ruta: str) -> str:
+    """Transcribe con Whisper y quema subtítulos con ffmpeg."""
+    tmp_wav = _tmp("wav")
+    tmp_srt = _tmp("srt")
 
     try:
-        # Extraer audio con ffmpeg
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", ruta_video, "-vn", "-ar", "16000", "-ac", "1", ruta_wav],
-            check=True, capture_output=True
-        )
+        _run(["ffmpeg", "-y", "-i", ruta, "-vn",
+              "-ar", "16000", "-ac", "1", tmp_wav])
 
-        # Transcribir con Whisper
-        model    = WhisperModel("tiny", device="cpu", compute_type="int8")
-        segments, _ = model.transcribe(ruta_wav, language="es")
-        subs     = [(s.start, s.end, s.text.strip()) for s in segments]
+        model = WhisperModel("tiny", device="cpu", compute_type="int8")
+        segments, _ = model.transcribe(tmp_wav, language="es")
+        subs = [(s.start, s.end, s.text.strip()) for s in segments]
 
         if not subs:
-            print("⚠️  No se detectó texto. Devolviendo video sin subtítulos.")
-            os.rename(ruta_video, ruta_salida)
-            return ruta_salida
+            print("⚠️ Sin texto detectado, video sin subtítulos.")
+            return ruta
 
-        # Generar .srt
-        with open(ruta_srt, "w", encoding="utf-8") as f:
+        with open(tmp_srt, "w", encoding="utf-8") as f:
             for i, (start, end, txt) in enumerate(subs, 1):
                 f.write(f"{i}\n{_ts(start)} --> {_ts(end)}\n{txt}\n\n")
 
-        # Quemar subtítulos con ffmpeg
-        subprocess.run([
-            "ffmpeg", "-y",
-            "-i", ruta_video,
-            "-vf", f"subtitles={ruta_srt}:force_style='FontSize=20,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2,Alignment=2'",
-            "-c:v", "libx264", "-c:a", "copy",
-            ruta_salida
-        ], check=True, capture_output=True)
+        salida = _tmp("mp4")
+        _run(["ffmpeg", "-y", "-i", ruta,
+              "-vf", f"subtitles={tmp_srt}:force_style='FontSize=18,PrimaryColour=&Hffffff,OutlineColour=&H000000,Outline=2,Alignment=2'",
+              "-c:v", "libx264", "-c:a", "copy", salida])
+        return salida
 
-        return ruta_salida
-
-    except subprocess.CalledProcessError as e:
-        print(f"⚠️  Error ffmpeg subtítulos: {e.stderr.decode()}")
-        # Si falla, devolver el video sin subtítulos igual
-        if not os.path.exists(ruta_salida) and os.path.exists(ruta_video):
-            os.rename(ruta_video, ruta_salida)
-        return ruta_salida
+    except Exception as e:
+        print(f"⚠️ Error subtítulos: {e}. Devolviendo sin subtítulos.")
+        return ruta
     finally:
-        for f in [ruta_wav, ruta_srt]:
+        for f in [tmp_wav, tmp_srt]:
             if os.path.exists(f): os.remove(f)
 
 
-def _ts(segundos: float) -> str:
-    """Convierte segundos a formato SRT: HH:MM:SS,mmm"""
-    h  = int(segundos // 3600)
-    m  = int((segundos % 3600) // 60)
-    s  = int(segundos % 60)
-    ms = int((segundos - int(segundos)) * 1000)
+def _ts(seg: float) -> str:
+    """Segundos → HH:MM:SS,mmm (formato SRT)."""
+    h  = int(seg // 3600)
+    m  = int((seg % 3600) // 60)
+    s  = int(seg % 60)
+    ms = int((seg - int(seg)) * 1000)
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
