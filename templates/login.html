@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CutAI — Acceder</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:        #03030a;
+      --surface:   #08080f;
+      --s1:        #0d0d18;
+      --s2:        #121220;
+      --s3:        #181828;
+      --border:    rgba(255,255,255,0.06);
+      --border-hi: rgba(255,255,255,0.12);
+      --accent:    #7c6bff;
+      --accent2:   #ff5f7e;
+      --accent3:   #00e5cc;
+      --text:      #f0f0f8;
+      --sub:       #a0a0c0;
+      --muted:     #505070;
+      --mono:      'JetBrains Mono', monospace;
+      --sans:      'Space Grotesk', sans-serif;
+      --r:         14px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 14px;
+      line-height: 1.6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Noise */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+      background-size: 200px 200px;
+      pointer-events: none; opacity: 0.5;
+    }
+
+    /* Grid lines */
+    body::after {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background-image:
+        linear-gradient(rgba(124,107,255,0.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(124,107,255,0.025) 1px, transparent 1px);
+      background-size: 48px 48px;
+      pointer-events: none;
+    }
+
+    /* Blobs */
+    .blob { position: fixed; border-radius: 50%; filter: blur(90px); pointer-events: none; z-index: 0; }
+    .blob-1 { width: 700px; height: 500px; background: var(--accent); opacity: 0.08; top: -200px; left: -150px; animation: d1 22s ease-in-out infinite; }
+    .blob-2 { width: 500px; height: 500px; background: var(--accent2); opacity: 0.07; bottom: -150px; right: -100px; animation: d2 28s ease-in-out infinite; }
+    .blob-3 { width: 350px; height: 350px; background: var(--accent3); opacity: 0.04; top: 50%; left: 50%; transform: translate(-50%,-50%); animation: d3 16s ease-in-out infinite; }
+    @keyframes d1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(50px,30px) scale(1.08); } }
+    @keyframes d2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-40px,-40px) scale(1.12); } }
+    @keyframes d3 { 0%,100% { transform: translate(-50%,-50%); } 50% { transform: translate(-48%,-52%); } }
+
+    /* ── CARD ── */
+    .card {
+      position: relative; z-index: 1;
+      width: 100%; max-width: 420px;
+      margin: 1.5rem;
+      background: rgba(8,8,15,0.85);
+      backdrop-filter: blur(24px);
+      border: 1px solid var(--border-hi);
+      border-radius: 20px;
+      padding: 2.5rem;
+      box-shadow: 0 0 0 1px rgba(124,107,255,0.05), 0 40px 80px rgba(0,0,0,0.6);
+      animation: cardIn 0.5s cubic-bezier(.2,.8,.4,1) both;
+    }
+    @keyframes cardIn {
+      from { opacity: 0; transform: translateY(24px) scale(0.97); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    /* Logo */
+    .logo {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 2rem;
+    }
+    .logo-icon {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1rem;
+      box-shadow: 0 4px 20px rgba(124,107,255,0.35);
+    }
+    .logo-text {
+      font-family: var(--mono);
+      font-size: 1.2rem; font-weight: 600;
+      letter-spacing: -0.03em;
+    }
+    .logo-text span { color: var(--accent); }
+
+    /* Tabs */
+    .tabs {
+      display: flex; background: var(--s1);
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 3px; gap: 3px; margin-bottom: 1.75rem;
+    }
+    .tab {
+      flex: 1; padding: 0.5rem;
+      text-align: center; border-radius: 8px;
+      font-size: 0.82rem; font-weight: 500;
+      cursor: pointer; border: none; background: transparent;
+      color: var(--muted); transition: all 0.2s;
+    }
+    .tab.active {
+      background: var(--s3);
+      color: var(--text);
+      border: 1px solid var(--border-hi);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+
+    /* Form panels */
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    /* Heading */
+    .form-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.3rem; letter-spacing: -0.02em; }
+    .form-sub { font-size: 0.78rem; color: var(--muted); margin-bottom: 1.5rem; }
+
+    /* Fields */
+    .field { margin-bottom: 1rem; }
+    .field label {
+      display: block; font-family: var(--mono); font-size: 0.62rem;
+      color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase;
+      margin-bottom: 0.4rem;
+    }
+    .field input {
+      width: 100%; background: var(--s1);
+      border: 1px solid var(--border-hi); border-radius: 10px;
+      padding: 0.7rem 0.9rem;
+      color: var(--text); font-family: var(--sans); font-size: 0.88rem;
+      outline: none; transition: all 0.2s;
+    }
+    .field input:focus {
+      border-color: rgba(124,107,255,0.6);
+      box-shadow: 0 0 0 3px rgba(124,107,255,0.1);
+    }
+    .field input::placeholder { color: var(--muted); }
+    .field input.error { border-color: var(--accent2); }
+
+    /* Password toggle */
+    .pwd-wrap { position: relative; }
+    .pwd-wrap input { padding-right: 2.5rem; }
+    .pwd-toggle {
+      position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%);
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      display: flex; align-items: center; transition: color 0.15s;
+    }
+    .pwd-toggle:hover { color: var(--sub); }
+
+    /* Submit btn */
+    .btn-submit {
+      width: 100%; padding: 0.75rem;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff; border: none; border-radius: 10px;
+      font-family: var(--sans); font-size: 0.9rem; font-weight: 600;
+      cursor: pointer; transition: all 0.2s; margin-top: 0.5rem;
+      box-shadow: 0 4px 20px rgba(124,107,255,0.3);
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      position: relative; overflow: hidden;
+    }
+    .btn-submit::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.1), transparent);
+      opacity: 0; transition: opacity 0.2s;
+    }
+    .btn-submit:hover::before { opacity: 1; }
+    .btn-submit:hover { box-shadow: 0 6px 28px rgba(124,107,255,0.45); transform: translateY(-1px); }
+    .btn-submit:active { transform: scale(0.98) translateY(0); }
+    .btn-submit:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+    /* Spinner */
+    .spinner {
+      width: 15px; height: 15px; border-radius: 50%;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      animation: spin 0.7s linear infinite; display: none;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Alert */
+    .alert {
+      padding: 0.65rem 0.9rem; border-radius: 8px;
+      font-size: 0.78rem; margin-bottom: 1rem; display: none;
+      border: 1px solid;
+    }
+    .alert.error { background: rgba(255,95,126,0.08); border-color: rgba(255,95,126,0.3); color: #ff8fa3; }
+    .alert.success { background: rgba(74,222,128,0.08); border-color: rgba(74,222,128,0.3); color: #4ade80; }
+
+    /* Footer */
+    .card-footer {
+      margin-top: 1.5rem; text-align: center;
+      font-size: 0.72rem; color: var(--muted);
+    }
+    .card-footer a { color: var(--accent); text-decoration: none; transition: opacity 0.15s; }
+    .card-footer a:hover { opacity: 0.8; }
+
+    /* Password strength */
+    .pwd-strength { margin-top: 0.4rem; display: none; }
+    .pwd-strength-bar { height: 2px; border-radius: 2px; background: var(--s3); overflow: hidden; }
+    .pwd-strength-fill { height: 100%; border-radius: 2px; transition: width 0.3s, background 0.3s; width: 0%; }
+    .pwd-strength-label { font-family: var(--mono); font-size: 0.58rem; color: var(--muted); margin-top: 4px; }
+
+    /* Divider */
+    .divider {
+      display: flex; align-items: center; gap: 0.75rem;
+      margin: 1.25rem 0; color: var(--muted); font-size: 0.72rem;
+    }
+    .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  </style>
+</head>
+<body>
+
+<div class="blob blob-1"></div>
+<div class="blob blob-2"></div>
+<div class="blob blob-3"></div>
+
+<div class="card">
+
+  <div class="logo">
+    <div class="logo-icon">✂️</div>
+    <div class="logo-text">Cut<span>AI</span></div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('login')">Iniciar sesión</button>
+    <button class="tab"        onclick="switchTab('register')">Crear cuenta</button>
+  </div>
+
+  <!-- ── LOGIN PANEL ── -->
+  <div class="panel active" id="panel-login">
+    <div class="form-title">Bienvenido de nuevo</div>
+    <div class="form-sub">Ingresá para continuar editando con IA</div>
+
+    <div class="alert" id="login-alert"></div>
+
+    <div class="field">
+      <label>Email</label>
+      <input type="email" id="login-email" placeholder="tu@email.com" autocomplete="email">
+    </div>
+    <div class="field">
+      <label>Contraseña</label>
+      <div class="pwd-wrap">
+        <input type="password" id="login-pwd" placeholder="••••••••" autocomplete="current-password">
+        <button class="pwd-toggle" onclick="togglePwd('login-pwd', this)" tabindex="-1">
+          <svg id="eye-login" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <button class="btn-submit" id="btn-login" onclick="doLogin()">
+      <div class="spinner" id="spin-login"></div>
+      <span id="lbl-login">Entrar →</span>
+    </button>
+  </div>
+
+  <!-- ── REGISTER PANEL ── -->
+  <div class="panel" id="panel-register">
+    <div class="form-title">Crear cuenta</div>
+    <div class="form-sub">Gratis · Sin tarjeta · Empezá en segundos</div>
+
+    <div class="alert" id="reg-alert"></div>
+
+    <div class="field">
+      <label>Nombre de usuario</label>
+      <input type="text" id="reg-user" placeholder="ej: juanperez" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>Email</label>
+      <input type="email" id="reg-email" placeholder="tu@email.com" autocomplete="email">
+    </div>
+    <div class="field">
+      <label>Contraseña</label>
+      <div class="pwd-wrap">
+        <input type="password" id="reg-pwd" placeholder="Mínimo 8 caracteres" autocomplete="new-password" oninput="checkStrength(this.value)">
+        <button class="pwd-toggle" onclick="togglePwd('reg-pwd', this)" tabindex="-1">
+          <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+      <div class="pwd-strength" id="pwd-strength">
+        <div class="pwd-strength-bar"><div class="pwd-strength-fill" id="strength-fill"></div></div>
+        <div class="pwd-strength-label" id="strength-label"></div>
+      </div>
+    </div>
+    <div class="field">
+      <label>Confirmar contraseña</label>
+      <div class="pwd-wrap">
+        <input type="password" id="reg-pwd2" placeholder="Repetí tu contraseña" autocomplete="new-password">
+        <button class="pwd-toggle" onclick="togglePwd('reg-pwd2', this)" tabindex="-1">
+          <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <button class="btn-submit" id="btn-reg" onclick="doRegister()">
+      <div class="spinner" id="spin-reg"></div>
+      <span id="lbl-reg">Crear cuenta →</span>
+    </button>
+  </div>
+
+  <div class="card-footer">
+    Al registrarte aceptás los <a href="#">términos de uso</a>
+  </div>
+
+</div>
+
+<script>
+// ── Tab switch ──────────────────────────────────────────────────────────
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', (tab==='login'&&i===0)||(tab==='register'&&i===1)));
+  document.getElementById('panel-login').classList.toggle('active', tab==='login');
+  document.getElementById('panel-register').classList.toggle('active', tab==='register');
+  hideAlert('login-alert'); hideAlert('reg-alert');
+}
+
+// ── Password visibility ─────────────────────────────────────────────────
+function togglePwd(id, btn) {
+  const inp = document.getElementById(id);
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  btn.querySelector('svg').innerHTML = show
+    ? '<line x1="1" y1="1" x2="23" y2="23"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22M9.9 4.24"/>'
+    : '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+}
+
+// ── Password strength ───────────────────────────────────────────────────
+function checkStrength(v) {
+  const el = document.getElementById('pwd-strength');
+  const fill = document.getElementById('strength-fill');
+  const lbl = document.getElementById('strength-label');
+  el.style.display = v.length ? 'block' : 'none';
+  let score = 0;
+  if (v.length >= 8)  score++;
+  if (v.length >= 12) score++;
+  if (/[A-Z]/.test(v) && /[a-z]/.test(v)) score++;
+  if (/\d/.test(v)) score++;
+  if (/[^A-Za-z0-9]/.test(v)) score++;
+  const levels = [
+    { w:'20%', c:'#ff5f7e', t:'Muy débil' },
+    { w:'40%', c:'#ff9a3c', t:'Débil' },
+    { w:'60%', c:'#ffd93d', t:'Aceptable' },
+    { w:'80%', c:'#a0e040', t:'Fuerte' },
+    { w:'100%',c:'#4ade80', t:'Muy fuerte' },
+  ];
+  const s = levels[Math.max(0, score-1)];
+  fill.style.width = s.w; fill.style.background = s.c;
+  lbl.textContent = s.t; lbl.style.color = s.c;
+}
+
+// ── Alerts ──────────────────────────────────────────────────────────────
+function showAlert(id, msg, type='error') {
+  const el = document.getElementById(id);
+  el.textContent = msg; el.className = 'alert ' + type;
+  el.style.display = 'block';
+}
+function hideAlert(id) { document.getElementById(id).style.display = 'none'; }
+
+// ── Loading state ───────────────────────────────────────────────────────
+function setLoading(btnId, spinId, lblId, loading) {
+  document.getElementById(btnId).disabled = loading;
+  document.getElementById(spinId).style.display = loading ? 'block' : 'none';
+  document.getElementById(lblId).style.opacity = loading ? '0' : '1';
+}
+
+// ── LOGIN ───────────────────────────────────────────────────────────────
+async function doLogin() {
+  hideAlert('login-alert');
+  const email = document.getElementById('login-email').value.trim();
+  const pwd   = document.getElementById('login-pwd').value;
+  if (!email || !pwd) { showAlert('login-alert', '⚠️ Completá todos los campos.'); return; }
+
+  setLoading('btn-login','spin-login','lbl-login', true);
+  try {
+    const res  = await fetch('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: pwd })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showAlert('login-alert', '✅ ¡Bienvenido! Redirigiendo...', 'success');
+      setTimeout(() => window.location.href = '/', 800);
+    } else {
+      showAlert('login-alert', '❌ ' + (data.error || 'Credenciales incorrectas.'));
+    }
+  } catch {
+    showAlert('login-alert', '❌ No se pudo conectar al servidor.');
+  }
+  setLoading('btn-login','spin-login','lbl-login', false);
+}
+
+// ── REGISTER ─────────────────────────────────────────────────────────────
+async function doRegister() {
+  hideAlert('reg-alert');
+  const username = document.getElementById('reg-user').value.trim();
+  const email    = document.getElementById('reg-email').value.trim();
+  const pwd      = document.getElementById('reg-pwd').value;
+  const pwd2     = document.getElementById('reg-pwd2').value;
+
+  if (!username || !email || !pwd || !pwd2) { showAlert('reg-alert', '⚠️ Completá todos los campos.'); return; }
+  if (pwd.length < 8) { showAlert('reg-alert', '⚠️ La contraseña debe tener al menos 8 caracteres.'); return; }
+  if (pwd !== pwd2)   { showAlert('reg-alert', '⚠️ Las contraseñas no coinciden.'); return; }
+
+  setLoading('btn-reg','spin-reg','lbl-reg', true);
+  try {
+    const res  = await fetch('/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, email, password: pwd })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showAlert('reg-alert', '✅ Cuenta creada. Iniciando sesión...', 'success');
+      setTimeout(() => window.location.href = '/', 1000);
+    } else {
+      showAlert('reg-alert', '❌ ' + (data.error || 'No se pudo crear la cuenta.'));
+    }
+  } catch {
+    showAlert('reg-alert', '❌ No se pudo conectar al servidor.');
+  }
+  setLoading('btn-reg','spin-reg','lbl-reg', false);
+}
+
+// ── Enter key ───────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const loginActive = document.getElementById('panel-login').classList.contains('active');
+  if (loginActive) doLogin(); else doRegister();
+});
+</script>
+</body>
+</html>
