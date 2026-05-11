@@ -8,7 +8,11 @@ import json
 import os
 from groq import Groq
 
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+def _get_client():
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY no está definida en las variables de entorno.")
+    return Groq(api_key=api_key)
 
 # ── Prompt para clasificar la intención del mensaje ───────────────────────
 CLASSIFIER_PROMPT = """Sos un clasificador de intenciones. Analizá el mensaje del usuario y respondé SOLO con una de estas dos palabras:
@@ -61,7 +65,7 @@ Reglas:
 
 
 def _clasificar_intencion(texto: str) -> str:
-    """Devuelve 'VIDEO' o 'CHAT' según la intención del mensaje."""
+    client = _get_client()
     try:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -80,12 +84,11 @@ def _clasificar_intencion(texto: str) -> str:
 
 
 def _responder_chat(texto: str, historial: list) -> str:
-    """Genera una respuesta conversacional breve."""
+    client = _get_client()
     messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
     if historial:
         messages.extend(historial)
     messages.append({"role": "user", "content": texto})
-
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=messages,
@@ -96,13 +99,6 @@ def _responder_chat(texto: str, historial: list) -> str:
 
 
 def interpretar_comando(texto: str, historial: list = None) -> dict | str:
-    """
-    Interpreta el mensaje del usuario.
-
-    - Si es un comando de video  → devuelve dict con las acciones.
-    - Si es conversación casual  → devuelve str con la respuesta de texto.
-    - Si el texto está vacío     → devuelve el dict vacío (fallback).
-    """
     fallback = {
         "remove_silence": False,
         "subtitles": False,
@@ -123,10 +119,8 @@ def interpretar_comando(texto: str, historial: list = None) -> dict | str:
 
     historial = historial or []
 
-    # ── 1. Clasificar intención ──────────────────────────────────────────
     intencion = _clasificar_intencion(texto)
 
-    # ── 2a. Respuesta conversacional ─────────────────────────────────────
     if intencion == "CHAT":
         try:
             return _responder_chat(texto, historial)
@@ -134,7 +128,7 @@ def interpretar_comando(texto: str, historial: list = None) -> dict | str:
             print(f"⚠️  Error en respuesta chat: {e}.")
             return "¡Hola! Estoy aquí para ayudarte a editar tus videos. ¿Qué querés hacer?"
 
-    # ── 2b. Comando de edición de video ──────────────────────────────────
+    client = _get_client()
     messages = [{"role": "system", "content": VIDEO_SYSTEM_PROMPT}]
     messages.extend(historial)
     messages.append({"role": "user", "content": texto})
