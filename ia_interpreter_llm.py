@@ -7,6 +7,7 @@ import json
 import os
 from groq import Groq
 
+# ── NO crear el client al importar — solo cuando se necesita ──────────────
 def _get_client():
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
@@ -47,29 +48,33 @@ El JSON tiene exactamente estas claves:
 Reglas:
 - Si el usuario dice "sacá eso" o "sin subtítulos" → poné esa clave en false/null.
 - Si dice "además" / "también" / "y" → sumá al estado anterior.
+- Si dice "cambiá la velocidad a X" → pisá el valor anterior de speed.
 - duration en segundos, speed multiplicador (1.0=normal), volume multiplicador (1.0=normal).
 - blackwhite: [inicio_seg, fin_seg] o null.
 - fade_in / fade_out: duración en segundos. null si no se menciona.
-- music_volume: volumen música de fondo (0.3 = 30%). null si no se menciona.
-- Plataformas: tiktok/reel = duration:30 + remove_silence:true. stories = duration:15. youtube = subtitles:true + remove_silence:true.
-- Respondé SOLO el JSON, sin texto extra ni backticks.
-- highlights: true si pide resumen/lo mejor/momentos clave. highlights_duration: segundos (default 30)."""
+- music_volume: 0.3 = 30%. null si no se menciona.
+- tiktok/reel → duration:30 + remove_silence:true. stories → duration:15. youtube → subtitles:true + remove_silence:true.
+- highlights: true si pide resumen/lo mejor/momentos clave. highlights_duration: segundos (default 30).
+- Respondé SOLO el JSON, sin texto extra ni backticks."""
+
+FALLBACK = {
+    "remove_silence": False, "subtitles": False, "duration": None,
+    "speed": None, "blackwhite": None, "zoom": None, "volume": None,
+    "fade_in": None, "fade_out": None, "music_volume": None,
+    "highlights": False, "highlights_duration": None,
+}
 
 
 def _clasificar_intencion(texto: str) -> str:
     try:
         client = _get_client()
-        response = client.chat.completions.create(
+        r = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": CLASSIFIER_PROMPT},
-                {"role": "user",   "content": texto},
-            ],
-            max_tokens=5,
-            temperature=0.0,
+            messages=[{"role":"system","content":CLASSIFIER_PROMPT},{"role":"user","content":texto}],
+            max_tokens=5, temperature=0.0,
         )
-        resultado = response.choices[0].message.content.strip().upper()
-        return "VIDEO" if "VIDEO" in resultado else "CHAT"
+        res = r.choices[0].message.content.strip().upper()
+        return "VIDEO" if "VIDEO" in res else "CHAT"
     except Exception as e:
         print(f"⚠️  Error en clasificador: {e}. Asumiendo VIDEO.")
         return "VIDEO"
@@ -77,54 +82,53 @@ def _clasificar_intencion(texto: str) -> str:
 
 def _responder_chat(texto: str, historial: list) -> str:
     client = _get_client()
-    messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}]
+    msgs = [{"role":"system","content":CHAT_SYSTEM_PROMPT}]
     if historial:
-        messages.extend(historial)
-    messages.append({"role": "user", "content": texto})
-    response = client.chat.completions.create(
+        msgs.extend(historial)
+    msgs.append({"role":"user","content":texto})
+    r = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
-        messages=messages,
-        max_tokens=150,
-        temperature=0.7,
+        messages=msgs, max_tokens=150, temperature=0.7,
     )
-    return response.choices[0].message.content.strip()
+    return r.choices[0].message.content.strip()
 
 
 def interpretar_comando(texto: str, historial: list = None):
-    fallback = {
-        "remove_silence": False, "subtitles": False, "duration": None,
-        "speed": None, "blackwhite": None, "zoom": None, "volume": None,
-        "fade_in": None, "fade_out": None, "music_volume": None,
-        "highlights": False, "highlights_duration": None,
-    }
+    """
+    Devuelve:
+      - str  → si es conversación casual
+      - dict → si es comando de video
+    """
     if not texto.strip():
-        return fallback
+        return FALLBACK.copy()
+
     historial = historial or []
     intencion = _clasificar_intencion(texto)
+
     if intencion == "CHAT":
         try:
             return _responder_chat(texto, historial)
         except Exception as e:
-            print(f"⚠️  Error en chat: {e}.")
+            print(f"⚠️  Error chat: {e}.")
             return "¡Hola! Estoy aquí para ayudarte a editar tus videos. ¿Qué querés hacer?"
+
+    # Comando de video
     client = _get_client()
-    messages = [{"role": "system", "content": VIDEO_SYSTEM_PROMPT}]
-    messages.extend(historial)
-    messages.append({"role": "user", "content": texto})
+    msgs = [{"role":"system","content":VIDEO_SYSTEM_PROMPT}]
+    msgs.extend(historial)
+    msgs.append({"role":"user","content":texto})
     try:
-        response = client.chat.completions.create(
+        r = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=messages,
-            max_tokens=300,
-            temperature=0.1,
+            messages=msgs, max_tokens=300, temperature=0.1,
         )
-        raw = response.choices[0].message.content.strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        raw = raw.replace("'", '"').replace("True", "true").replace("False", "false").replace("None", "null")
+        raw = r.choices[0].message.content.strip()
+        raw = raw.replace("```json","").replace("```","").strip()
+        raw = raw.replace("'",'"').replace("True","true").replace("False","false").replace("None","null")
         result = json.loads(raw)
         if result.get("speed")  == 1.0: result["speed"]  = None
         if result.get("volume") == 1.0: result["volume"] = None
         return result
     except Exception as e:
         print(f"⚠️  Error LLM: {e}. Usando fallback.")
-        return fallback
+        return FALLBACK.copy()
