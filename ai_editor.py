@@ -4,8 +4,6 @@ Soporta cualquier formato de video. Rápido y robusto.
 """
 import os, tempfile, subprocess, json
 from faster_whisper import WhisperModel
-from pydub import AudioSegment
-from pydub.silence import detect_nonsilent
 
 
 # ── Helper ffmpeg ─────────────────────────────────────────────────────────
@@ -29,6 +27,49 @@ def _duracion(ruta: str) -> float:
     return float(data["format"]["duration"])
 
 
+def _bajar_resolucion(ruta: str, max_height: int = 720) -> str:
+    """
+    Si el video es más grande que max_height px de alto,
+    lo reescala manteniendo el aspect ratio. Siempre re-encodea
+    para garantizar compatibilidad. Devuelve la ruta del resultado.
+    """
+    try:
+        # Obtener resolución actual
+        r = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_streams", "-select_streams", "v:0", ruta],
+            capture_output=True, timeout=30
+        )
+        info   = json.loads(r.stdout)
+        stream = info["streams"][0] if info.get("streams") else {}
+        height = int(stream.get("height", 0))
+        width  = int(stream.get("width",  0))
+
+        ruta_out = ruta.replace("_fixed.", "_720p.").replace("_input.", "_720p.")
+
+        if height > max_height:
+            # Escalar manteniendo aspecto, ancho múltiplo de 2
+            scale = f"scale=-2:{max_height}"
+            print(f"📐 Reduciendo resolución: {width}x{height} → 720p")
+        else:
+            # Igual re-encodear para uniformizar formato
+            scale = f"scale={width}:{height}"
+
+        _run([
+            "ffmpeg", "-y", "-i", ruta,
+            "-vf", scale,
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            ruta_out
+        ])
+        return ruta_out
+
+    except Exception as e:
+        print(f"⚠️ No se pudo reescalar: {e}. Usando original.")
+        return ruta
+
+
 def _reparar(ruta: str) -> str:
     """Re-muxea para corregir moov atom y otros problemas de corrupción."""
     ruta_fixed = ruta.replace("_input.", "_fixed.")
@@ -50,12 +91,33 @@ def procesar_video(ruta: str, acciones: dict, ruta_salida: str = "uploads/video_
 
     os.makedirs(os.path.dirname(ruta_salida) or "uploads", exist_ok=True)
 
-    # 1. Reparar video primero
+    # 1. Validar tamaño de archivo antes de reparar
+    MAX_SIZE_MB  = 200
+    MAX_DURATION = 600   # 10 minutos
+    size_mb = os.path.getsize(ruta) / 1024 / 1024
+    if size_mb > MAX_SIZE_MB:
+        raise ValueError(
+            f"El video pesa {size_mb:.0f}MB y supera el límite de {MAX_SIZE_MB}MB. "
+            f"Por favor subí un video más liviano."
+        )
+
+    # 2. Reparar video primero
     ruta = _reparar(ruta)
     duracion = _duracion(ruta)
     print(f"📹 Duración: {duracion:.1f}s")
 
-    # 2. Normalizar acciones
+    # Validar duración máxima
+    if duracion > MAX_DURATION:
+        minutos = int(duracion // 60)
+        raise ValueError(
+            f"El video dura {minutos} minutos y supera el límite de 10 minutos. "
+            f"Por favor subí un video más corto o recortalo antes de subirlo."
+        )
+
+    # 3. Bajar resolución a 720p automáticamente (más rápido de procesar)
+    ruta = _bajar_resolucion(ruta)
+
+    # 4. Normalizar acciones
     speed  = acciones.get("speed")
     volume = acciones.get("volume")
     zoom   = acciones.get("zoom")
@@ -196,35 +258,58 @@ def _tmp(ext: str) -> str:
     return f.name
 
 
-def _eliminar_silencios(ruta: str, min_silence_ms=700, thresh=-38, padding_ms=150) -> str:
-    """Detecta silencios con pydub y concatena los segmentos con voz."""
-    tmp_wav = _tmp("wav")
-    _run(["ffmpeg", "-y", "-i", ruta, "-vn", "-ar", "16000", "-ac", "1", tmp_wav])
+def _eliminar_silencios(ruta: str, silence_thresh_db=-35, min_silence_s=0.5, padding_s=0.15) -> str:
+    """
+    Detecta silencios usando ffmpeg silencedetect y concatena segmentos con voz.
+    Sin dependencias de pydub — 100% ffmpeg.
+    """
+    # 1. Detectar silencios con ffmpeg
+    result = subprocess.run(
+        ["ffmpeg", "-i", ruta, "-af",
+         f"silencedetect=noise={silence_thresh_db}dB:d={min_silence_s}",
+         "-f", "null", "-"],
+        capture_output=True, text=True, timeout=120
+    )
+    output = result.stderr
 
-    audio = AudioSegment.from_wav(tmp_wav)
-    segs  = detect_nonsilent(audio, min_silence_len=min_silence_ms, silence_thresh=thresh)
-    os.remove(tmp_wav)
+    # 2. Parsear silences
+    import re
+    starts = [float(x) for x in re.findall(r"silence_start: (\S+)", output)]
+    ends   = [float(x) for x in re.findall(r"silence_end: (\S+)", output)]
 
-    if not segs:
+    duracion = _duracion(ruta)
+
+    # 3. Construir segmentos de voz (entre silencios)
+    voz = []
+    cursor = 0.0
+    for s, e in zip(starts, ends):
+        if s > cursor:
+            voz.append((cursor, s))
+        cursor = e
+    if cursor < duracion:
+        voz.append((cursor, duracion))
+
+    if not voz:
+        print("⚠️ No se detectaron segmentos de voz. Devolviendo original.")
         return ruta
 
-    dur_ms = len(audio)
-    # Generar lista de segmentos con padding
-    partes = []
-    for s, e in segs:
-        inicio = max(0, s - padding_ms) / 1000
-        fin    = min(dur_ms, e + padding_ms) / 1000
-        partes.append((inicio, fin))
-
-    # Crear archivo concat
+    # 4. Cortar con padding y concatenar
     clips = []
-    for i, (inicio, fin) in enumerate(partes):
+    for inicio, fin in voz:
+        i = max(0.0, inicio - padding_s)
+        f = min(duracion, fin + padding_s)
+        if f - i < 0.2:  # ignorar clips muy cortos
+            continue
         tmp_clip = _tmp("mp4")
         _run(["ffmpeg", "-y", "-i", ruta,
-              "-ss", str(inicio), "-to", str(fin),
+              "-ss", f"{i:.3f}", "-to", f"{f:.3f}",
               "-c:v", "libx264", "-c:a", "aac", "-preset", "fast", tmp_clip])
         clips.append(tmp_clip)
 
+    if not clips:
+        return ruta
+
+    print(f"🔇 Silencios eliminados: {len(clips)} segmento(s)")
     return _concatenar(clips)
 
 
@@ -244,20 +329,31 @@ def _concatenar(clips: list) -> str:
 
 
 def _highlights(ruta: str, duracion: float, hl_dur: float = 30.0, ventana: float = 3.0) -> str:
-    """Selecciona los segmentos de mayor energía de audio."""
-    tmp_wav = _tmp("wav")
-    _run(["ffmpeg", "-y", "-i", ruta, "-vn", "-ar", "16000", "-ac", "1", tmp_wav])
+    """
+    Selecciona segmentos de mayor volumen usando ffmpeg volumedetect por segmento.
+    Sin pydub — 100% ffmpeg.
+    """
+    import re
+    n_segs  = max(1, int(hl_dur / ventana))
+    paso    = ventana / 2
+    tiempos = list(range(0, int(duracion - ventana), int(paso)))
 
-    audio   = AudioSegment.from_wav(tmp_wav)
-    os.remove(tmp_wav)
-    vm      = int(ventana * 1000)
-    energias = [(audio[i:i+vm].rms, i / 1000)
-                for i in range(0, len(audio) - vm, vm // 2)]
+    # Medir volumen medio de cada ventana
+    energias = []
+    for t in tiempos:
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-ss", str(t), "-t", str(ventana),
+             "-i", ruta, "-af", "volumedetect", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=30
+        )
+        m = re.search(r"mean_volume: ([-\d.]+) dB", r.stderr)
+        if m:
+            energias.append((float(m.group(1)), float(t)))
+
     if not energias:
         return ruta
 
     energias.sort(reverse=True)
-    n_segs  = max(1, int(hl_dur / ventana))
     mejores = sorted(energias[:n_segs], key=lambda x: x[1])
 
     clips, ultimo = [], -ventana
@@ -266,11 +362,12 @@ def _highlights(ruta: str, duracion: float, hl_dur: float = 30.0, ventana: float
             fin = min(inicio + ventana, duracion)
             tmp_clip = _tmp("mp4")
             _run(["ffmpeg", "-y", "-i", ruta,
-                  "-ss", str(inicio), "-to", str(fin),
+                  "-ss", f"{inicio:.3f}", "-to", f"{fin:.3f}",
                   "-c:v", "libx264", "-c:a", "aac", "-preset", "fast", tmp_clip])
             clips.append(tmp_clip)
             ultimo = fin
 
+    print(f"⭐ Highlights: {len(clips)} segmento(s)")
     return _concatenar(clips) if clips else ruta
 
 
