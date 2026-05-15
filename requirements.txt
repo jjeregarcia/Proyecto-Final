@@ -2,7 +2,6 @@ flask
 flask-login
 werkzeug
 groq
-gunicorn
+gunicorn[gthread]
 faster-whisper
-pydub
 numpy
